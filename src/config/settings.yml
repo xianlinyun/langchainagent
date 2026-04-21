@@ -1,0 +1,22 @@
+agent:
+  external_data_path: data/external/records.csv
+  temperature: 0.7
+  message_save_num: 15
+prompts:
+  main_prompt_path: prompts/main_prompt.md
+  rag_summarize_prompt_path: prompts/rag_summarize.md
+  report_prompt_path: prompts/report_prompt.md
+  law_prompt_path: prompts/law_prompt.md
+rag:
+  chat_model_name: qwen3-max-2025-09-23
+  embedding_model_name: text-embedding-v3
+chroma:
+  persist_directory: chroma_db
+  collection_name: agent
+  k: 8
+  data_path: data
+  md5_hex_store: md5.text
+  allow_knowledge_file_type: [ ".txt", ".pdf", ".docx", ".md" ]
+  separatoes: [ "\n\n", "\n", " ", "", ".", "!", "?", "。", "！", "？" ]
+  chunk_size: 200
+  chunk_overlap: 20

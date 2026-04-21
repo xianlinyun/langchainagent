@@ -1,0 +1,56 @@
+# 1. 基础镜像
+FROM python:3.11-slim AS base
+
+# 2. 从官方 uv 镜像中拷贝二进制文件
+RUN pip install uv -i https://pypi.tuna.tsinghua.edu.cn/simple
+
+# 3. 国内镜像源加速 (补回中科大镜像)
+RUN sed -i 's/deb.debian.org/mirrors.ustc.edu.cn/g' /etc/apt/sources.list.d/debian.sources
+
+# 4. 设置环境变量 (补回并发限制、HF缓存等)
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    UV_COMPILE_BYTECODE=1 \
+    UV_HTTP_TIMEOUT=100 \
+    HF_HOME=/app/model_cache \
+    OMP_NUM_THREADS=4 \
+    MKL_NUM_THREADS=4 \
+    PYTHONPATH=/app/src
+
+WORKDIR /app
+
+# 5. 安装系统依赖 (补回构建所需的 GCC、sqlite3 等)
+# 这一步对于安装 chromadb 和 pandas 的某些版本非常重要
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    gcc \
+    g++ \
+    libffi-dev \
+    libssl-dev \
+    curl \
+    ca-certificates \
+    sqlite3 \
+    && rm -rf /var/lib/apt/lists/*
+
+# 6. 复制依赖描述文件
+COPY pyproject.toml uv.lock* ./
+
+# 7. 使用 uv 安装依赖 (补回 --system 模式)
+# 如果你还没有 uv.lock，构建时删掉 --frozen 参数，运行一次后 uv 会生成它
+RUN uv pip install --system --no-cache -r pyproject.toml
+
+# 8. 预创建必要的目录 (补回法影智芒所需的存储路径)
+RUN mkdir -p /app/logs /app/model_cache /app/chroma_db /app/data /app/config /app/prompts
+
+# 9. 复制项目代码
+COPY src /app/src
+COPY src/data /app/data
+COPY src/config /app/config
+COPY src/prompts /app/prompts
+
+# 10. 暴露端口
+EXPOSE 8000
+
+# 11. 启动命令 (补回 gunicorn 的多 worker 和超时配置)
+# 注意：确保 app.main:app 路径正确，如果 main.py 在 src/app/ 目录下则无需修改
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--log-level", "debug"]

@@ -1,0 +1,34 @@
+server:
+  address: 0.0.0.0
+  port: 8080
+spring:
+  main:
+    allow-bean-definition-overriding: true
+  datasource:
+    url: jdbc:mysql://localhost:3306/law?useSSL=false&serverTimezone=UTC&characterEncoding=utf8
+    username: root
+    password: henu
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: "*"
+  endpoint:
+    health:
+      show-details: always
+
+
+jwt:
+  secret: your-secret-key-for-jwt-token-generation-must-be-long-enough
+  expiration: 86400000
+  header: Authorization
+  prefix: "Bearer "

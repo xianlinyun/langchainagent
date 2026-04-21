@@ -1,0 +1,20 @@
+# 忽略 Python 缓存
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/*.pyd
+
+# 忽略本地虚拟环境（这是镜像变大的头号元凶）
+.venv/
+venv/
+env/
+.conda/
+# 忽略本地数据和模型（改用挂载方式）
+data/
+models/
+.chroma/
+# 忽略敏感文件和 Git
+.git/
+.env
+.idea/
+.vscode/
