@@ -3,6 +3,8 @@ from typing import Dict, Any
 from contextlib import asynccontextmanager
 import os
 import uvicorn
+from datetime import datetime
+import uuid
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse, JSONResponse
 from starlette.requests import Request
@@ -19,6 +21,8 @@ from app.modules.agents.rag_searching.workflow import build_rag_search_app
 
 # --- 1. 全局生命周期管理 ---
 ml_models: dict[str, object] = {}
+# per-thread counters for generating incremental checkpoint ids
+thread_counters: dict[str, int] = {}
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -57,10 +61,24 @@ class ContractsConfig(BaseModel):
 def _ensure_thread_id(request: Request, config: Dict[str, Any] = None) -> Dict[str, Any]:
     cfg = dict(config or {})
     configurable = cfg.setdefault("configurable", {})
+    # if any of the main identifiers already present, respect them
     if any(k in configurable for k in ("thread_id", "checkpoint_id", "checkpoint_ns")):
         return cfg
     header_tid = request.headers.get("X-Thread-Id", None)
-    configurable["thread_id"] = header_tid or "default-thread"
+    thread_id = header_tid or configurable.get("thread_id") or "default-thread"
+    configurable["thread_id"] = thread_id
+
+    # maintain a per-thread counter to produce incremental checkpoint ids
+    cnt = thread_counters.get(thread_id, 0) + 1
+    thread_counters[thread_id] = cnt
+
+    # checkpoint_id: <thread_id>-<seq>-<short-uuid>
+    short_uuid = uuid.uuid4().hex[:8]
+    configurable.setdefault("checkpoint_id", f"{thread_id}-{cnt}-{short_uuid}")
+
+    # checkpoint_ns: use ISO timestamp with milliseconds
+    configurable.setdefault("checkpoint_ns", datetime.utcnow().isoformat(timespec="milliseconds") + "Z")
+
     return cfg
 
 def sse_event_generator(workflow_app, input_data, config):
