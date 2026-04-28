@@ -65,7 +65,13 @@ def _ensure_thread_id(request: Request, config: Dict[str, Any] = None) -> Dict[s
     if any(k in configurable for k in ("thread_id", "checkpoint_id", "checkpoint_ns")):
         return cfg
     header_tid = request.headers.get("X-Thread-Id", None)
-    thread_id = header_tid or configurable.get("thread_id") or "default-thread"
+    existing_tid = configurable.get("thread_id")
+    if header_tid:
+        thread_id = header_tid
+    elif existing_tid:
+        thread_id = existing_tid
+    else:
+        thread_id = f"tid-{uuid.uuid4().hex[:8]}"
     configurable["thread_id"] = thread_id
 
     # maintain a per-thread counter to produce incremental checkpoint ids

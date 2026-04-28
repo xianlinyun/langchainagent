@@ -1,4 +1,3 @@
-
 import asyncio
 
 from langgraph.graph import END, START, StateGraph
@@ -14,6 +13,7 @@ from app.modules.agents.rag_searching.node import (
     retriver_node,
     generator_node,
 )
+
 
 class StatePlanExecute(TypedDict, total=False):
     """工作流状态定义。
@@ -67,7 +67,6 @@ def build_rag_search_app():
 
         # 其余情况继续打回重写
         return "retry"
-
 
     # 串联工作流节点与条件边
     workflow.add_edge(START, "input")
@@ -130,5 +129,7 @@ async def start():
         for key, value in event.items():
             if key != "__end__":
                 print(f"{key}: {value}")
+
+
 if __name__ == "__main__":
     asyncio.run(start())

@@ -1,6 +1,7 @@
 import os
 import torch
 from fastapi import FastAPI, Depends, HTTPException, Security
+import uvicorn
 from fastapi.security.api_key import APIKeyHeader
 from transformers import AutoModel, AutoTokenizer, AutoModelForSpeechSeq2Seq, AutoProcessor
 
@@ -86,5 +87,4 @@ async def list_models(_=Security(get_api_key)):
         "device": device
     }
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("router:app", host="0.0.0.0", port=8000, reload=True)

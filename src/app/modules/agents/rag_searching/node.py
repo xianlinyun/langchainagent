@@ -8,15 +8,13 @@ from app.shared.tools.retrieval import rag_retrieve_tool, rag_sammarize_tool
 from app.utils.prompt_loader import load_prompt
 
 
-def _append_step(state: dict, label: str, detail: object | None) -> list[tuple]:
-    """在 past_steps 中追加一条记录（不再截断内容）。"""
+def _append_step(label: str, detail: object | None) -> list[tuple]:
+    """只返回本节点新增的一条 step，交给 LangGraph reducer 追加。"""
 
-    past_steps = list(state.get("past_steps", []))
     text = ""
     if detail is not None:
         text = str(detail)
-    past_steps.append((label, text))
-    return past_steps
+    return [(label, text)]
 
 
 def _merge_contract_info(old: dict, new: dict) -> dict:
@@ -34,8 +32,8 @@ def _merge_contract_info(old: dict, new: dict) -> dict:
 
     # 简单字段合并
     important_fields = [
-        "intent",#意图
-        "fact",# 事实
+        "intent",  # 意图
+        "fact",  # 事实
         "evidence",
     ]
 
@@ -99,12 +97,14 @@ def _merge_contract_info(old: dict, new: dict) -> dict:
             merged["reason"] = "关键信息已基本完整"
 
     return merged
+
+
 async def extract_node(state: dict):
     """提取节点：结合历史 contract_info 与本轮输入一起提取并合并。"""
 
-    resp = await get_llm_chain("src/app/modules/agents/rag_searching/input.jinja2").ainvoke(
-        {"input": state["input"]}
-    )
+    resp = await get_llm_chain(
+        "src/app/modules/agents/rag_searching/input.jinja2"
+    ).ainvoke({"input": state["input"]})
     content = getattr(resp, "content", str(resp))
     try:
         # 尝试从模型输出中截取纯 JSON（去掉可能的 ```json 代码块包裹）
@@ -121,10 +121,9 @@ async def extract_node(state: dict):
         # 当模型未按要求返回合法 JSON 时，避免整个流程崩溃
         print(f"extract_node JSON 解析失败, 原始内容: {content!r}")
         msg = "抱歉，我没能从你的描述中识别出清晰的要求。请尽量说明事实、意图、相关证据等关键信息。"
-        past_steps = _append_step(state, "信息提取失败", msg)
         return {
             "contract_info": state.get("contract_info", {}),
-            "past_steps": past_steps,
+            "past_steps": _append_step("信息提取失败", msg),
             "response": msg,
         }
 
@@ -135,12 +134,6 @@ async def extract_node(state: dict):
     is_complete = bool(merged_info.get("is_complete", False))
     missing = merged_info.get("missing_fields", []) or []
     reason = merged_info.get("reason", "未知原因")
-    past_steps = _append_step(
-        state,
-        "信息提取",
-        f"已累积识别{len(merged_info)}个字段，信息{'完整' if is_complete else '不完整'}",
-    )
-
     # 若不完整：直接返回缺失字段提示，让调用方提示用户补充后重新输入；
     # 后续节点（add / RAG / write / check）不再继续执行，由图上的条件边控制。
     if not is_complete:
@@ -149,12 +142,23 @@ async def extract_node(state: dict):
         msg = f"{reason_str},请补充{missing_str}等关键信息，以便我更好地帮助你分析相关的法律问题。"
         return {
             "contract_info": merged_info,
-            "past_steps": past_steps,
+            "past_steps": _append_step(
+                "信息提取",
+                f"已累积识别{len(merged_info)}个字段，信息{'完整' if is_complete else '不完整'}",
+            ),
             "response": msg,
         }
 
     # 信息完整：正常进入后续节点
-    return {"contract_info": merged_info, "past_steps": past_steps}
+    return {
+        "contract_info": merged_info,
+        "past_steps": _append_step(
+            "信息提取",
+            f"已累积识别{len(merged_info)}个字段，信息{'完整' if is_complete else '不完整'}",
+        ),
+    }
+
+
 async def clarification_node(state: dict):
     # 1. 获取提取节点留下的缺失线索
     info = state.get("contract_info", {})
@@ -165,15 +169,21 @@ async def clarification_node(state: dict):
     if not missing:
         return {
             "contract_info": info,
-            "past_steps": _append_step(state, "信息澄清略过", "关键信息已基本完整，无需澄清。"),
+            "past_steps": _append_step(
+                "信息澄清略过", "关键信息已基本完整，无需澄清。"
+            ),
         }
 
     # 3. 调用澄清链生成追问话术
-    msg = await get_llm_chain("src/app/modules/agents/rag_searching/clarification.jinja2").ainvoke({
-        "extracted_info": info,
-        "missing_fields": missing,
-        "reason": reason,
-    })
+    msg = await get_llm_chain(
+        "src/app/modules/agents/rag_searching/clarification.jinja2"
+    ).ainvoke(
+        {
+            "extracted_info": info,
+            "missing_fields": missing,
+            "reason": reason,
+        }
+    )
     content = getattr(msg, "content", str(msg))
     new_info = info.copy()
     new_info["legal_context"] = content
@@ -181,8 +191,10 @@ async def clarification_node(state: dict):
     # 4. 把话术存入 response，准备回传给用户
     return {
         "contract_info": new_info,
-        "past_steps": _append_step(state, "信息澄清", content),
+        "past_steps": _append_step("信息澄清", content),
     }
+
+
 async def category_node(state: dict):
     info = state.get("contract_info", {})
     # 将当前已提取的要素 JSON 和澄清上下文一起提供给分类模型，
@@ -193,7 +205,9 @@ async def category_node(state: dict):
     }
     content = json.dumps(rich_content, ensure_ascii=False, indent=2)
     # 1. 构建分类提示词，提供当前已提取的要素信息，帮助模型判断应检索的法律类别
-    category_llm = get_llm_chain("src/app/modules/agents/rag_searching/ragcategory.jinja2")
+    category_llm = get_llm_chain(
+        "src/app/modules/agents/rag_searching/ragcategory.jinja2"
+    )
     # 2. 调用 Agent 进行分类
     response = await category_llm.ainvoke({"content": content})
     if isinstance(response, dict):
@@ -205,15 +219,19 @@ async def category_node(state: dict):
     new_info["categories"] = str(content).strip()
     return {
         "contract_info": new_info,
-        "past_steps": _append_step(state, "法律分类", content),
+        "past_steps": _append_step("法律分类", content),
     }
+
+
 async def retriver_node(state: dict):
     info = state.get("contract_info", {})
-    
+
     # 提前判断：如果没有明确的法律问题类型/案件类型，不浪费 Token
     if not info.get("categories") or info["categories"] == "unknown":
         return {
-            "past_steps": _append_step(state, "法律检索", "法律问题类型未知，未执行法律检索。"),
+            "past_steps": _append_step(
+                "法律检索", "法律问题类型未知，未执行法律检索。"
+            ),
         }
 
     # 将当前已提取的法律要素/案件要素以 JSON 形式一并提供给检索/模型，
@@ -286,7 +304,9 @@ async def retriver_node(state: dict):
             retrieved_laws.append(str(response))
 
         # 汇总文本，方便后续直接当作上下文使用
-        merged_content = "\n\n".join(retrieved_laws) if retrieved_laws else "未找到相关文档。"
+        merged_content = (
+            "\n\n".join(retrieved_laws) if retrieved_laws else "未找到相关文档。"
+        )
 
         # 4. 安全地更新 State
         new_info = info.copy()
@@ -294,22 +314,27 @@ async def retriver_node(state: dict):
 
         return {
             "contract_info": new_info,
-            "past_steps": _append_step(state, "法律检索", f"共检索到 {len(retrieved_laws)} 组相关条文。"),
+            "past_steps": _append_step(
+                "法律检索", f"共检索到 {len(retrieved_laws)} 组相关条文。"
+            ),
         }
-        
+
     except Exception as e:
         print(f"检索节点运行失败: {e}")
         return {
-            "past_steps": _append_step(state, "法律检索失败", str(e)),
+            "past_steps": _append_step("法律检索失败", str(e)),
         }
+
+
 async def generator_node(state: dict):
     """法律科普总结/说明节点：根据已提取信息和法律背景，生成结构化说明文本。"""
     info = state.get("contract_info", {})
-    past_steps = state.get("past_steps", [])
 
     try:
         # 使用本 agent 下的法律科普 summary 提示词构建链（仅用于 rag_searching 场景）
-        chain = get_llm_chain("src/app/modules/agents/rag_searching/summary_prompt.jinja2")
+        chain = get_llm_chain(
+            "src/app/modules/agents/rag_searching/summary_prompt.jinja2"
+        )
         # 直接将当前 contract_info 作为上下文传入（序列化为 JSON 便于模型阅读）
         payload = {"contract_info": json.dumps(info, ensure_ascii=False, indent=2)}
         summary = await chain.ainvoke(payload)
@@ -323,21 +348,23 @@ async def generator_node(state: dict):
 
         return {
             "contract_info": new_info,
-            "past_steps": _append_step(state, "信息总结", summary),
+            "past_steps": _append_step("信息总结", summary),
         }
 
     except Exception as e:
         print(f"总结节点运行失败: {e}")
         return {}
-    
+
+
 async def check_node(state: dict):
     """检查节点：对生成的法律科普说明进行自我检查，确保没有遗漏重要信息或逻辑错误。"""
     info = state.get("contract_info", {})
-    past_steps = state.get("past_steps", [])
 
     try:
         # 使用本 agent 下的检查提示词构建链，面向一般法律科普场景
-        chain = get_llm_chain("src/app/modules/agents/rag_searching/contract_check_prompt.jinja2")
+        chain = get_llm_chain(
+            "src/app/modules/agents/rag_searching/contract_check_prompt.jinja2"
+        )
         payload = {"contract_info": json.dumps(info, ensure_ascii=False, indent=2)}
         raw = await chain.ainvoke(payload)
 
@@ -355,7 +382,7 @@ async def check_node(state: dict):
         try:
             parsed = json.loads(json_str)
         except Exception:
-                parsed = {
+            parsed = {
                 "is_pass": False,
                 "issues": ["检查结果解析失败，原始输出：" + text],
                 "suggestion": "请人工复核当前法律说明。",
@@ -367,12 +394,14 @@ async def check_node(state: dict):
 
         return {
             "contract_info": new_info,
-            "past_steps": _append_step(state, "信息检查", parsed),
+            "past_steps": _append_step("信息检查", parsed),
         }
 
     except Exception as e:
         print(f"检查节点运行失败: {e}")
         return {}
+
+
 async def output_node(state: dict):
     """输出节点：根据 contract_info / legal_summary / check_result 生成最终说明。"""
 
@@ -390,13 +419,15 @@ async def output_node(state: dict):
     }
 
     try:
-        chain = get_llm_chain("src/app/modules/agents/rag_searching/output_prompt.jinja2")
+        chain = get_llm_chain(
+            "src/app/modules/agents/rag_searching/output_prompt.jinja2"
+        )
         result = await chain.ainvoke(payload)
         content = getattr(result, "content", str(result))
 
         return {
             "contract_info": info,
-            "past_steps": _append_step(state, "最终输出", content),
+            "past_steps": _append_step("最终输出", content),
             "response": content,
         }
 
@@ -404,7 +435,10 @@ async def output_node(state: dict):
         # 回退策略：若最终生成阶段失败，至少返回检查节点的结论，避免整个流程崩溃
         print(f"output_node 运行失败: {e}")
         if check_result.get("is_pass"):
-            text = legal_summary or "法律说明生成成功，但最终生成节点出现异常，请人工复核。"
+            text = (
+                legal_summary
+                or "法律说明生成成功，但最终生成节点出现异常，请人工复核。"
+            )
         else:
             issues = check_result.get("issues", ["未知问题"])
             suggestion = check_result.get("suggestion", "请人工复核当前法律说明。")
@@ -412,6 +446,6 @@ async def output_node(state: dict):
 
         return {
             "contract_info": info,
-            "past_steps": _append_step(state, "最终输出失败", str(e)),
+            "past_steps": _append_step("最终输出失败", str(e)),
             "response": text,
         }
