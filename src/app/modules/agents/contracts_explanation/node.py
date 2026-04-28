@@ -1,23 +1,17 @@
 # node.py
 import json
 
-from langchain.agents import create_agent
-
 from app.core.llm.chains.contract_chains import get_llm_chain
-from app.core.llm.factory import get_chat_model
-from app.shared.tools.retrieval import rag_retrieve_tool, rag_sammarize_tool
-from app.utils.prompt_loader import load_prompt
+from app.shared.tools.retrieval import rag_retrieve_tool
 
 
-def _append_step(state: dict, label: str, detail: object | None) -> list[tuple]:
-    """在 past_steps 中追加一条记录（不再截断内容）。"""
+def _append_step(label: str, detail: object | None) -> list[tuple]:
+    """只返回本节点新增的一条 step，交给 LangGraph reducer 追加。"""
 
-    past_steps = list(state.get("past_steps", []))
     text = ""
     if detail is not None:
         text = str(detail)
-    past_steps.append((label, text))
-    return past_steps
+    return [(label, text)]
 
 
 def _merge_contract_info(old: dict, new: dict) -> dict:
@@ -110,9 +104,9 @@ def _merge_contract_info(old: dict, new: dict) -> dict:
 async def extract_node(state: dict):
     """提取节点：结合历史 contract_info 与本轮输入一起提取并合并。"""
 
-    resp = await get_llm_chain("src/app/shared/prompts/contract_extract_prompt.jinja2").ainvoke(
-        {"input": state["input"]}
-    )
+    resp = await get_llm_chain(
+        "src/app/shared/prompts/contract_extract_prompt.jinja2"
+    ).ainvoke({"input": state["input"]})
     content = getattr(resp, "content", str(resp))
     try:
         # 尝试从模型输出中截取纯 JSON（去掉可能的 ```json 代码块包裹）
@@ -129,7 +123,7 @@ async def extract_node(state: dict):
         # 当模型未按要求返回合法 JSON 时，避免整个流程崩溃
         print(f"extract_node JSON 解析失败, 原始内容: {content!r}")
         msg = "抱歉，我没能从你的描述中识别出清晰的合同要素。请尽量说明合同类型、双方主体、金额和期限等关键信息。"
-        past_steps = _append_step(state, "信息提取失败", msg)
+        past_steps = _append_step("信息提取失败", msg)
         return {
             "contract_info": state.get("contract_info", {}),
             "past_steps": past_steps,
@@ -144,7 +138,6 @@ async def extract_node(state: dict):
     missing = merged_info.get("missing_fields", []) or []
 
     past_steps = _append_step(
-        state,
         "信息提取",
         f"已累积识别{len(merged_info)}个字段，信息{'完整' if is_complete else '不完整'}",
     )
@@ -174,15 +167,19 @@ async def clarification_node(state: dict):
     if not missing:
         return {
             "contract_info": info,
-            "past_steps": _append_step(state, "信息澄清略过", "关键信息已基本完整，无需澄清。"),
+            "past_steps": _append_step(
+                "信息澄清略过", "关键信息已基本完整，无需澄清。"
+            ),
         }
 
     # 3. 调用澄清链生成追问话术
-    msg = await get_llm_chain("src/app/shared/prompts/clarification.jinja2").ainvoke({
-        "extracted_info": info,
-        "missing_fields": missing,
-        "reason": reason,
-    })
+    msg = await get_llm_chain("src/app/shared/prompts/clarification.jinja2").ainvoke(
+        {
+            "extracted_info": info,
+            "missing_fields": missing,
+            "reason": reason,
+        }
+    )
     content = getattr(msg, "content", str(msg))
     new_info = info.copy()
     new_info["legal_context"] = content
@@ -190,8 +187,9 @@ async def clarification_node(state: dict):
     # 4. 把话术存入 response，准备回传给用户
     return {
         "contract_info": new_info,
-        "past_steps": _append_step(state, "信息澄清", content),
+        "past_steps": _append_step("信息澄清", content),
     }
+
 
 async def category_node(state: dict):
     info = state.get("contract_info", {})
@@ -215,15 +213,19 @@ async def category_node(state: dict):
     new_info["category"] = str(content).strip()
     return {
         "contract_info": new_info,
-        "past_steps": _append_step(state, "合同分类", content),
+        "past_steps": _append_step("合同分类", content),
     }
+
+
 async def retriver_node(state: dict):
     info = state.get("contract_info", {})
-    
+
     # 提前判断：如果没有明确的合同类型，不浪费 Token
     if not info.get("contract_type") or info["contract_type"] == "unknown":
         return {
-            "past_steps": _append_step(state, "法律检索", "合同类型未知，未执行法律检索。"),
+            "past_steps": _append_step(
+                "法律检索", "合同类型未知，未执行法律检索。"
+            ),
         }
 
     # 将当前已提取的合同要素以 JSON 形式一并提供给检索/模型，
@@ -244,19 +246,19 @@ async def retriver_node(state: dict):
 
         return {
             "contract_info": new_info,
-            "past_steps": _append_step(state, "法律检索", content),
+            "past_steps": _append_step("法律检索", content),
         }
-        
+
     except Exception as e:
         print(f"检索节点运行失败: {e}")
         return {
-            "past_steps": _append_step(state, "法律检索失败", str(e)),
+            "past_steps": _append_step("法律检索失败", str(e)),
         }
+
 
 async def generator_node(state: dict):
     """总结/说明节点：根据已提取信息和法律背景，生成结构化说明文本。"""
     info = state.get("contract_info", {})
-    past_steps = state.get("past_steps", [])
 
     try:
         # 使用专门的合同总结提示词构建链
@@ -274,16 +276,17 @@ async def generator_node(state: dict):
 
         return {
             "contract_info": new_info,
-            "past_steps": _append_step(state, "信息总结", summary),
+            "past_steps": _append_step("信息总结", summary),
         }
 
     except Exception as e:
         print(f"总结节点运行失败: {e}")
         return {}
+
+
 async def check_node(state: dict):
     """检查节点：对生成的合同说明进行自我检查，确保没有遗漏重要信息或逻辑错误。"""
     info = state.get("contract_info", {})
-    past_steps = state.get("past_steps", [])
 
     try:
         # 使用专门的检查提示词构建链
@@ -317,12 +320,14 @@ async def check_node(state: dict):
 
         return {
             "contract_info": new_info,
-            "past_steps": _append_step(state, "信息检查", parsed),
+            "past_steps": _append_step("信息检查", parsed),
         }
 
     except Exception as e:
         print(f"检查节点运行失败: {e}")
         return {}
+
+
 async def output_node(state: dict):
     """输出节点：根据 contract_info / legal_summary / check_result 生成最终说明。"""
 
@@ -346,7 +351,7 @@ async def output_node(state: dict):
 
         return {
             "contract_info": info,
-            "past_steps": _append_step(state, "最终输出", content),
+            "past_steps": _append_step("最终输出", content),
             "response": content,
         }
 
@@ -354,7 +359,10 @@ async def output_node(state: dict):
         # 回退策略：若最终生成阶段失败，至少返回检查节点的结论，避免整个流程崩溃
         print(f"output_node 运行失败: {e}")
         if check_result.get("is_pass"):
-            text = legal_summary or "合同说明生成成功，但最终生成节点出现异常，请人工复核。"
+            text = (
+                legal_summary
+                or "合同说明生成成功，但最终生成节点出现异常，请人工复核。"
+            )
         else:
             issues = check_result.get("issues", ["未知问题"])
             suggestion = check_result.get("suggestion", "请人工复核当前合同说明。")
@@ -362,6 +370,6 @@ async def output_node(state: dict):
 
         return {
             "contract_info": info,
-            "past_steps": _append_step(state, "最终输出失败", str(e)),
+            "past_steps": _append_step("最终输出失败", str(e)),
             "response": text,
         }
