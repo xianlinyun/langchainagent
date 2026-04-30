@@ -5,7 +5,7 @@ spring:
   main:
     allow-bean-definition-overriding: true
   datasource:
-    url: jdbc:mysql://localhost:3306/law?useSSL=false&serverTimezone=UTC&characterEncoding=utf8
+    url: jdbc:mysql://mysql_law:3306/law?useSSL=false&serverTimezone=UTC&characterEncoding=utf8&allowPublicKeyRetrieval=true
     username: root
     password: henu
     driver-class-name: com.mysql.cj.jdbc.Driver
@@ -25,7 +25,6 @@ management:
   endpoint:
     health:
       show-details: always
-
 
 jwt:
   secret: your-secret-key-for-jwt-token-generation-must-be-long-enough

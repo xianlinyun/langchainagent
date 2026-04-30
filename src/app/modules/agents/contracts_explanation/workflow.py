@@ -68,7 +68,6 @@ def build_contracts_explanation_app():
         # 其余情况继续打回重写
         return "retry"
 
-
     # 串联工作流节点与条件边
     workflow.add_edge(START, "input")
 
@@ -130,5 +129,7 @@ async def start():
         for key, value in event.items():
             if key != "__end__":
                 print(f"{key}: {value}")
+
+
 if __name__ == "__main__":
     asyncio.run(start())
