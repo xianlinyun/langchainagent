@@ -20,7 +20,7 @@ MODEL_CONFIG_REGISTRY = {
     "whisper": {"env": "WHISPER_PATH", "type": "speech-seq2seq"},
 }
 
-API_KEY = os.getenv("EMBED_API_KEY", "faying-secret-2026")
+API_KEY = os.getenv("API_KEY", "faying-secret-2026")
 API_KEY_NAME = "X-API-Key"
 api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
 
